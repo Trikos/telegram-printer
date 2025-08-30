@@ -3,7 +3,7 @@
 FROM python:3.11-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ghostscript fonts-dejavu-core \
+    ghostscript fonts-dejavu-core libreoffice-writer libreoffice-calc libreoffice-common \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
