@@ -166,7 +166,7 @@ def _send_raw_9100(pcl_bytes_iter, host: str, port: int) -> Tuple[bool, str]:
             except Exception:
                 pass
         log.info("Inviati %d byte a %s:%d (RAW 9100).", total, host, port)
-        return True, "Job inviato (RAW 9100)."
+        return True, "Job inviato alla stampante ✅"
     except Exception as e:
         return False, f"Errore invio RAW 9100: {e}"
 
