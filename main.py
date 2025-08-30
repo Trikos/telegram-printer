@@ -40,6 +40,7 @@ if not BOT_TOKEN:
 if not PRINTER_URI:
     raise SystemExit("PRINTER_URI mancante. Usa p.es. socket://192.168.178.176:9100")
 
+
 # ========= Util RAW 9100 =========
 def _parse_socket_uri(uri: str) -> Tuple[str, int]:
     """
@@ -50,10 +51,13 @@ def _parse_socket_uri(uri: str) -> Tuple[str, int]:
         raise SystemExit("PRINTER_URI deve essere del tipo socket://IP:9100 per uso senza CUPS.")
     return p.hostname, p.port or 9100
 
+
 PRN_HOST, PRN_PORT = _parse_socket_uri(PRINTER_URI)
+
 
 def _bytes_mb(n: int) -> float:
     return n / (1024 * 1024)
+
 
 def _ensure_allowed(update: Update) -> bool:
     if not ALLOWED_CHAT_IDS:
@@ -61,11 +65,13 @@ def _ensure_allowed(update: Update) -> bool:
     cid = update.effective_chat.id if update.effective_chat else None
     return cid in ALLOWED_CHAT_IDS
 
+
 def image_to_pdf(src_path: Path) -> Path:
     out_path = src_path.with_suffix(".pdf")
     pdf_bytes = img2pdf.convert(src_path.read_bytes())
     out_path.write_bytes(pdf_bytes)
     return out_path
+
 
 def _tcp_check(host: str, port: int, timeout: float = 2.0):
     start = time.monotonic()
@@ -74,6 +80,7 @@ def _tcp_check(host: str, port: int, timeout: float = 2.0):
             return True, (time.monotonic() - start) * 1000.0, None
     except Exception as e:
         return False, None, str(e)
+
 
 def _papersize_arg(media: str) -> Optional[str]:
     """
@@ -89,6 +96,7 @@ def _papersize_arg(media: str) -> Optional[str]:
     }
     gs_name = mapping.get(m)
     return f"-sPAPERSIZE={gs_name}" if gs_name else None
+
 
 def _gs_to_pcl_stream(pdf_path: Path, copies: int, duplex: bool):
     """
@@ -115,6 +123,7 @@ def _gs_to_pcl_stream(pdf_path: Path, copies: int, duplex: bool):
     log.info("Ghostscript: %s", shlex.join(cmd))
     return subprocess.Popen(cmd, stdout=subprocess.PIPE)
 
+
 def _send_raw_9100(pcl_bytes_iter, host: str, port: int) -> Tuple[bool, str]:
     """
     Invia i bytes PCL al socket 9100.
@@ -138,6 +147,7 @@ def _send_raw_9100(pcl_bytes_iter, host: str, port: int) -> Tuple[bool, str]:
         return True, "Job inviato (RAW 9100)."
     except Exception as e:
         return False, f"Errore invio RAW 9100: {e}"
+
 
 def _parse_caption(text: Optional[str]) -> Tuple[int, bool]:
     """
@@ -165,27 +175,57 @@ def _parse_caption(text: Optional[str]) -> Tuple[int, bool]:
             duplex = False
     return copies, duplex
 
+
 # ========= Handlers =========
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _ensure_allowed(update):
         await update.effective_message.reply_text("Accesso negato.")
         return
-    txt = (
-        "Inviami un *PDF* o un'*immagine* (JPEG/PNG/WEBP) e la stampo (RAW 9100, senza CUPS).\n\n"
-        "*Caption semplice*:\n"
-        "`2 on`  → 2 copie, duplex *ON*\n"
-        "`3 off` → 3 copie, duplex *OFF*\n"
-        "`2`     → 2 copie (duplex default)\n"
-        "`on`/`off` → 1 copia, duplex ON/OFF\n\n"
-        f"Target: `{PRINTER_URI}`"
+
+    # Duplex di default in base alla config corrente
+    default_duplex_on = (DEFAULT_SIDES != "one-sided")
+    default_duplex_txt = "ON (fronte/retro)" if default_duplex_on else "OFF (solo fronte)"
+
+    msg = (
+        "*TG Print Bot — guida rapida*\n"
+        "Stampa *PDF* e *immagini* (JPEG/PNG/WEBP) sulla stampante configurata, via rete (*RAW 9100*, senza CUPS).\n\n"
+
+        "*Come si usa*\n"
+        "1) Invia un PDF *oppure* una foto/immagine (le immagini vengono convertite in PDF automaticamente).\n"
+        "2) (Opzionale) Nella *caption* indica copie e fronte/retro con una sintassi semplice:\n"
+        "   • `2 on`  → stampa 2 copie, *duplex ON* (fronte/retro)\n"
+        "   • `3 off` → stampa 3 copie, *duplex OFF* (solo fronte)\n"
+        "   • `2`     → 2 copie, duplex di default\n"
+        "   • `on` / `off` → 1 copia, duplex ON/OFF\n\n"
+
+        "*Cos’è il duplex?*\n"
+        "Il *duplex* è la *stampa fronte/retro*. Con *ON* il foglio viene stampato su entrambi i lati, con *OFF* solo sul fronte. "
+        "Questo bot usa l’impostazione *rilegatura lato lungo* (come un libro) quando il duplex è attivo.\n\n"
+
+        "*Comandi disponibili*\n"
+        "• `/status` → mostra la stampante di destinazione configurata\n"
+        "• `/ping [ip]` → verifica la connettività TCP verso le porte *9100* (RAW) e *631* (IPP). "
+        "Senza IP usa quello di `PRINTER_URI`.\n"
+        "• `/testpage` → invia una pagina di prova (1 copia, duplex OFF)\n\n"
+
+        "*Impostazioni correnti*\n"
+        f"• Stampante: `{PRINTER_URI}`\n"
+        f"• Formato: `{DEFAULT_MEDIA}`   • Duplex default: *{default_duplex_txt}*   • Scaling: `{DEFAULT_SCALING}`\n"
+        f"• Limite dimensione file: {int(MAX_FILE_MB)} MB\n\n"
+
+        "_Suggerimenti_: se non stampa, prova `/ping`; assicurati che la porta *9100* sia aperta tra server e stampante. "
+        "Accetta solo PDF/JPEG/PNG/WEBP; altri formati non vengono stampati."
     )
-    await update.effective_message.reply_text(txt, parse_mode=constants.ParseMode.MARKDOWN)
+
+    await update.effective_message.reply_text(msg, parse_mode=constants.ParseMode.MARKDOWN)
+
 
 async def status_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _ensure_allowed(update):
         await update.effective_message.reply_text("Accesso negato.")
         return
     await update.effective_message.reply_text(f"Stampante: `{PRINTER_URI}`", parse_mode=constants.ParseMode.MARKDOWN)
+
 
 async def ping_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _ensure_allowed(update):
@@ -202,6 +242,7 @@ async def ping_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             lines.append(f"• Porta {port}: ❌ chiusa ({err})")
     await update.effective_message.reply_text("\n".join(lines), parse_mode=constants.ParseMode.MARKDOWN)
 
+
 def _make_test_pdf() -> Path:
     """
     Crea al volo un PDF A4 bianco con scritta 'TG-PRINT-BOT TEST' usando PIL+img2pdf.
@@ -217,6 +258,7 @@ def _make_test_pdf() -> Path:
     pdf_path.write_bytes(img2pdf.convert(img_path.read_bytes()))
     return pdf_path
 
+
 async def testpage_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _ensure_allowed(update):
         await update.effective_message.reply_text("Accesso negato.")
@@ -226,6 +268,7 @@ async def testpage_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _handle_pdf_path(pdf_path, update, "1 off")
     except Exception as e:
         await update.message.reply_text(f"Testpage errore: {e}")
+
 
 async def _handle_pdf_path(pdf_path: Path, update: Update, caption: Optional[str]):
     copies, duplex = _parse_caption(caption)
@@ -244,6 +287,7 @@ async def _handle_pdf_path(pdf_path: Path, update: Update, caption: Optional[str
     except Exception:
         proc.kill()
     await update.message.reply_text(msg)
+
 
 async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _ensure_allowed(update):
@@ -266,6 +310,7 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"Conversione immagine→PDF fallita: {e}")
             return
         await _handle_pdf_path(pdf_path, update, update.message.caption)
+
 
 async def handle_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _ensure_allowed(update):
