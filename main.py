@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 from urllib.parse import urlparse
 
+
 from telegram import Update, constants
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
@@ -64,6 +65,27 @@ def _ensure_allowed(update: Update) -> bool:
         return True
     cid = update.effective_chat.id if update.effective_chat else None
     return cid in ALLOWED_CHAT_IDS
+
+
+def office_to_pdf(src_path: Path) -> Path:
+    """
+    Converte DOC/DOCX/XLS/XLSX/ODT/ODS -> PDF usando LibreOffice headless.
+    Ritorna il percorso del PDF creato nella stessa dir del sorgente.
+    """
+    out_dir = src_path.parent
+    cmd = [
+        "soffice", "--headless", "--nologo", "--nofirststartwizard",
+        "--nodefault", "--norestore",
+        "--convert-to", "pdf",
+        "--outdir", str(out_dir),
+        str(src_path)
+    ]
+    log.info("LibreOffice: %s", shlex.join(cmd))
+    subprocess.check_call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
+    pdf_path = out_dir / (src_path.stem + ".pdf")
+    if not pdf_path.exists():
+        raise RuntimeError("Conversione Office→PDF fallita (file non creato).")
+    return pdf_path
 
 
 def image_to_pdf(src_path: Path) -> Path:
@@ -331,12 +353,25 @@ async def handle_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         mime = (doc.mime_type or "").lower()
         try:
-            if mime == "application/pdf" or dl_path.suffix.lower() == ".pdf":
+            ext = dl_path.suffix.lower()
+            if mime == "application/pdf" or ext == ".pdf":
                 pdf_path = dl_path
-            elif mime.startswith("image/") or dl_path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}:
+            elif mime.startswith("image/") or ext in {".jpg", ".jpeg", ".png", ".webp"}:
                 pdf_path = image_to_pdf(dl_path)
+            elif ext in {".doc", ".docx", ".xls", ".xlsx", ".odt", ".ods"} or \
+                    mime in {
+                "application/msword",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "application/vnd.ms-excel",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "application/vnd.oasis.opendocument.text",
+                "application/vnd.oasis.opendocument.spreadsheet",
+            }:
+                pdf_path = office_to_pdf(dl_path)
             else:
-                await update.message.reply_text("Formato non supportato. Invia PDF o immagine (JPEG/PNG/WEBP).")
+                await update.message.reply_text(
+                    "Formato non supportato. Invia PDF/immagine oppure Word/Excel/ODF (verranno convertiti in PDF)."
+                )
                 return
         except Exception as e:
             await update.message.reply_text(f"Conversione fallita: {e}")
