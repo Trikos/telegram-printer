@@ -248,7 +248,8 @@ async def handle_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         await _handle_pdf_path(pdf_path, update, update.message.caption)
 
-async def main():
+
+def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("status", status_cmd))
@@ -259,7 +260,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        pass
+    main()
