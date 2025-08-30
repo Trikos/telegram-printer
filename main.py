@@ -17,7 +17,7 @@ from telegram.ext import (
 )
 
 import img2pdf
-from PIL import Image
+from PIL import Image, ImageDraw
 
 # ========= Config via env =========
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
@@ -27,7 +27,7 @@ ALLOWED_CHAT_IDS = {
 }
 MAX_FILE_MB = float(os.environ.get("MAX_FILE_MB", "40"))
 
-DEFAULT_MEDIA = os.environ.get("DEFAULT_MEDIA", "A4")     # solo informativa (layout); stampa è RAW
+DEFAULT_MEDIA = os.environ.get("DEFAULT_MEDIA", "A4")     # informativa; mappata a -sPAPERSIZE
 DEFAULT_SIDES = os.environ.get("DEFAULT_SIDES", "one-sided")  # one-sided | two-sided-long-edge
 DEFAULT_SCALING = os.environ.get("DEFAULT_SCALING", "fit-to-page")  # informativa
 
@@ -75,12 +75,28 @@ def _tcp_check(host: str, port: int, timeout: float = 2.0):
     except Exception as e:
         return False, None, str(e)
 
+def _papersize_arg(media: str) -> Optional[str]:
+    """
+    Mappa media comuni a Ghostscript -sPAPERSIZE.
+    """
+    if not media:
+        return None
+    m = media.strip().lower()
+    mapping = {
+        "a4": "a4",
+        "letter": "letter",
+        "legal": "legal"
+    }
+    gs_name = mapping.get(m)
+    return f"-sPAPERSIZE={gs_name}" if gs_name else None
+
 def _gs_to_pcl_stream(pdf_path: Path, copies: int, duplex: bool):
     """
     Converte PDF -> PCL XL mono (pxlmono) su stdout.
     Opzioni:
       -dNumCopies=<n>
       -dDuplex (se duplex True) + -dTumble=false (fronte/retro lato lungo)
+      -sPAPERSIZE se mappabile da DEFAULT_MEDIA
     """
     cmd = [
         "gs",
@@ -90,6 +106,9 @@ def _gs_to_pcl_stream(pdf_path: Path, copies: int, duplex: bool):
         "-r600",
         f"-dNumCopies={max(1, int(copies))}",
     ]
+    pa = _papersize_arg(DEFAULT_MEDIA)
+    if pa:
+        cmd.append(pa)
     if duplex:
         cmd += ["-dDuplex", "-dTumble=false"]
     cmd.append(str(pdf_path))
@@ -103,12 +122,19 @@ def _send_raw_9100(pcl_bytes_iter, host: str, port: int) -> Tuple[bool, str]:
     """
     try:
         with socket.create_connection((host, port), timeout=5) as s:
-            # bufferizza a blocchi
+            s.settimeout(30)  # tempo per invii lunghi
+            total = 0
             while True:
                 chunk = pcl_bytes_iter.read(65536)
                 if not chunk:
                     break
                 s.sendall(chunk)
+                total += len(chunk)
+            try:
+                s.shutdown(socket.SHUT_WR)  # segnala fine job
+            except Exception:
+                pass
+        log.info("Inviati %d byte a %s:%d (RAW 9100).", total, host, port)
         return True, "Job inviato (RAW 9100)."
     except Exception as e:
         return False, f"Errore invio RAW 9100: {e}"
@@ -175,6 +201,31 @@ async def ping_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else:
             lines.append(f"• Porta {port}: ❌ chiusa ({err})")
     await update.effective_message.reply_text("\n".join(lines), parse_mode=constants.ParseMode.MARKDOWN)
+
+def _make_test_pdf() -> Path:
+    """
+    Crea al volo un PDF A4 bianco con scritta 'TG-PRINT-BOT TEST' usando PIL+img2pdf.
+    """
+    tmpdir = Path(tempfile.mkdtemp())
+    img_path = tmpdir / "test.png"
+    pdf_path = tmpdir / "test.pdf"
+    # A4 @ 300dpi ~ 2480x3508
+    img = Image.new("RGB", (1240, 1754), "white")
+    d = ImageDraw.Draw(img)
+    d.text((80, 80), "TG-PRINT-BOT TEST\nRAW 9100 / PCL6\nOK.", fill="black")
+    img.save(img_path, "PNG")
+    pdf_path.write_bytes(img2pdf.convert(img_path.read_bytes()))
+    return pdf_path
+
+async def testpage_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _ensure_allowed(update):
+        await update.effective_message.reply_text("Accesso negato.")
+        return
+    try:
+        pdf_path = _make_test_pdf()
+        await _handle_pdf_path(pdf_path, update, "1 off")
+    except Exception as e:
+        await update.message.reply_text(f"Testpage errore: {e}")
 
 async def _handle_pdf_path(pdf_path: Path, update: Update, caption: Optional[str]):
     copies, duplex = _parse_caption(caption)
@@ -254,6 +305,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("ping", ping_cmd))
+    app.add_handler(CommandHandler("testpage", testpage_cmd))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.run_polling()
